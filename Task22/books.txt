@@ -1,0 +1,4 @@
+1|false|Y3JpbWUgYW5kIHB1bmlzaG1lbnQ=|ZnlvZGVy
+2|true|cmV6ZXJv|dGFwcGVp
+3|true|c2lkZW5vdGU=|YWxhbg==
+4|true|aG91c2Ugb2YgdGhlIGRyYWdvbg==|ZGFlbW9u

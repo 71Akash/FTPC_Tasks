@@ -1,0 +1,5 @@
+Hello, world! Welcome to the Java I/O test suite.
+
+This program should count lines, words, and characters accurately.
+Special characters like punctuation marks shouldn't break the longest-word logic.
+Extraordinary!

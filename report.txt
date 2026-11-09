@@ -1,0 +1,5 @@
+Text File Report
+Lines: 5
+Words: 29
+Characters (excluding line endings): 210
+Longest word: Extraordinary!
