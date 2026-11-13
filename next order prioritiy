@@ -1,0 +1,247 @@
+
+/*
+ * GMDT TE Priority Ratio Order Selection
+ * Line: TE / 11
+ * SpareFlag 6 excluded
+ *
+ * Returns:
+ * [0] Order Number
+ * [1] Line
+ * [2] Selected SpareFlag
+ * [3] Priority
+ */
+
+function getNextTEOrderByPriorityScenario(varLine,varLineNo,varDownloadState)
+{
+    var_connectionOMS = getProperty("IDB_CONNECTIONOMS")
+
+    // Step 1: Get released order history
+    sqlHistory = "SELECT WORK_ORDER.ORDER_NUMBER, UDA_ORDER.SPAREORDER_I "
+    sqlHistory += "FROM UDA_ORDER "
+    sqlHistory += "INNER JOIN WORK_ORDER ON WORK_ORDER.ORDER_KEY = UDA_ORDER.OBJECT_KEY "
+    sqlHistory += "WHERE UDA_ORDER.RELEASETIME_T IS NOT NULL "
+    sqlHistory += "AND UDA_ORDER.SID_S = '5' "
+    sqlHistory += "AND UDA_ORDER.LINE_NUMBER_S = '"+varLineNo+"' "
+    sqlHistory += "AND UDA_ORDER.SPAREORDER_I NOT IN ('6') "
+    sqlHistory += "ORDER BY UDA_ORDER.RELEASETIME_T DESC"
+
+    vecHistory = getPreparedStatementArrayDataFromActive(sqlHistory,false,null)
+
+    // Step 2: Get active TE priority configurations
+    sqlConfig = "SELECT SPAREFLAG_I, FLAG_I, PRIORITY_I, COUNT_I "
+    sqlConfig += "FROM AT_FROZZEN_COUNT "
+    sqlConfig += "WHERE SHOP_S = 'TRANSMISSION' "
+    sqlConfig += "AND LINE_S = '"+varLine+"' "
+    sqlConfig += "AND FLAG_I = 1 "
+    sqlConfig += "AND SPAREFLAG_I NOT IN ('6') "
+    sqlConfig += "ORDER BY PRIORITY_I"
+
+    vecConfig = getPreparedStatementArrayDataFromActive(sqlConfig,false,null)
+
+    if(vecConfig.size() == 0)
+    {
+        println("No active priority configuration found for TE")
+        return vector()
+    }
+
+    varStartIndex = 0
+    varCurrentPriority = 0
+    varLastFlag = ""
+
+    // Step 3: Identify the latest released category
+    if(vecHistory.size() > 0)
+    {
+        varLastFlag = vecHistory[0][1].toString()
+
+        sqlCurrent = "SELECT SPAREFLAG_I, FLAG_I, PRIORITY_I, COUNT_I "
+        sqlCurrent += "FROM AT_FROZZEN_COUNT "
+        sqlCurrent += "WHERE SHOP_S = 'TRANSMISSION' "
+        sqlCurrent += "AND LINE_S = '"+varLine+"' "
+        sqlCurrent += "AND SPAREFLAG_I = '"+varLastFlag+"' "
+        sqlCurrent += "AND SPAREFLAG_I NOT IN ('6') "
+        sqlCurrent += "ORDER BY PRIORITY_I"
+
+        vecCurrent = getPreparedStatementArrayDataFromActive(sqlCurrent,false,null)
+
+        if(vecCurrent.size() > 0)
+        {
+            varCurrentPriority = stringToInt(vecCurrent[0][2])
+
+            if(vecCurrent[0][1].toString() == "1")
+            {
+                varRatioCount = stringToInt(vecCurrent[0][3])
+                varLastDownloadCount = 0
+
+                // Count consecutive matching flags.
+                for(i=0; i<varRatioCount && i<vecHistory.size(); i++)
+                {
+                    if(vecHistory[i][1].toString() == varLastFlag)
+                    {
+                        varLastDownloadCount++
+                    }
+                    else
+                    {
+                        break
+                    }
+                }
+
+                // Continue the current category if ratio is incomplete.
+                if(varRatioCount > varLastDownloadCount)
+                {
+                    for(i=0; i<vecConfig.size(); i++)
+                    {
+                        if(vecConfig[i][0].toString() == varLastFlag)
+                        {
+                            varStartIndex = i
+                            break
+                        }
+                    }
+                }
+                else
+                {
+                    // Ratio completed: find the next active priority.
+                    varFoundNext = false
+
+                    for(i=0; i<vecConfig.size(); i++)
+                    {
+                        if(stringToInt(vecConfig[i][2]) > varCurrentPriority)
+                        {
+                            varStartIndex = i
+                            varFoundNext = true
+                            break
+                        }
+                    }
+
+                    if(varFoundNext == false)
+                    {
+                        varStartIndex = 0
+                    }
+                }
+            }
+            else
+            {
+                // Current configuration is inactive.
+                varFoundNext = false
+
+                for(i=0; i<vecConfig.size(); i++)
+                {
+                    if(stringToInt(vecConfig[i][2]) > varCurrentPriority)
+                    {
+                        varStartIndex = i
+                        varFoundNext = true
+                        break
+                    }
+                }
+
+                if(varFoundNext == false)
+                {
+                    varStartIndex = 0
+                }
+            }
+        }
+    }
+
+    // Step 4: Try the selected priority and then subsequent priorities.
+    for(k=0; k<vecConfig.size(); k++)
+    {
+        varIndex = varStartIndex + k
+
+        if(varIndex >= vecConfig.size())
+        {
+            varIndex = varIndex - vecConfig.size()
+        }
+
+        varCandidateFlag = vecConfig[varIndex][0].toString()
+        varCandidatePriority = vecConfig[varIndex][2]
+
+        stmta = var_connectionOMS.createStatement()
+
+        // Scenario: Sequenced
+        if(varDownloadState == "Sequenced")
+        {
+            sqlAvailable = "SELECT TransOrder, Line FROM OrderManagement "
+            sqlAvailable += "WHERE Shop = 'TRANSMISSION' "
+            sqlAvailable += "AND OrderState = 'SEQUENCED' "
+            sqlAvailable += "AND Line = '"+varLine+"' "
+            sqlAvailable += "AND SpareFlag = '"+varCandidateFlag+"' "
+            sqlAvailable += "ORDER BY ISNULL(Sequence_No * 0, 1), "
+            sqlAvailable += "Sequence_No, MakeTriggerTime ASC"
+        }
+
+        // Scenario: Created
+        else if(varDownloadState == "Created")
+        {
+            sqlAvailable = "SELECT TransOrder, Line FROM OrderManagement "
+            sqlAvailable += "WHERE Shop = 'TRANSMISSION' "
+            sqlAvailable += "AND OrderState = 'CREATED' "
+            sqlAvailable += "AND Line = '"+varLine+"' "
+            sqlAvailable += "AND SpareFlag = '"+varCandidateFlag+"' "
+            sqlAvailable += "ORDER BY ISNULL(LeadTime * 0, 1), LeadTime, "
+            sqlAvailable += "ISNULL(Sequence_No * 0, 1), "
+            sqlAvailable += "Sequence_No, MakeTriggerTime ASC"
+        }
+
+        // Scenario: ALL
+        else if(varDownloadState == "ALL")
+        {
+            sqlAvailable = "SELECT TransOrder, Line, "
+            sqlAvailable += "ISNULL(Sequence_No * 0, 1) AS SeqSort1, "
+            sqlAvailable += "Sequence_No AS SeqSort2, "
+            sqlAvailable += "MakeTriggerTime AS SeqSort3, "
+            sqlAvailable += "NULL AS LeadSort1, NULL AS LeadSort2 "
+            sqlAvailable += "FROM OrderManagement "
+            sqlAvailable += "WHERE Shop = 'TRANSMISSION' "
+            sqlAvailable += "AND OrderState = 'SEQUENCED' "
+            sqlAvailable += "AND Line = '"+varLine+"' "
+            sqlAvailable += "AND SpareFlag = '"+varCandidateFlag+"' "
+
+            sqlAvailable += "UNION ALL "
+
+            sqlAvailable += "SELECT TransOrder, Line, "
+            sqlAvailable += "ISNULL(Sequence_No * 0, 1), "
+            sqlAvailable += "Sequence_No, MakeTriggerTime, "
+            sqlAvailable += "ISNULL(LeadTime * 0, 1), LeadTime "
+            sqlAvailable += "FROM OrderManagement "
+            sqlAvailable += "WHERE Shop = 'TRANSMISSION' "
+            sqlAvailable += "AND OrderState = 'CREATED' "
+            sqlAvailable += "AND Line = '"+varLine+"' "
+            sqlAvailable += "AND SpareFlag = '"+varCandidateFlag+"' "
+
+            sqlAvailable += "ORDER BY LeadSort1, LeadSort2, "
+            sqlAvailable += "SeqSort1, SeqSort2, SeqSort3"
+        }
+
+        // Existing fallback scenario
+        else
+        {
+            sqlAvailable = "SELECT TransOrder, Line FROM OrderManagement "
+            sqlAvailable += "WHERE Shop = 'TRANSMISSION' "
+            sqlAvailable += "AND OrderState = 'None' "
+            sqlAvailable += "AND Line = '"+varLine+"' "
+            sqlAvailable += "AND SpareFlag = '"+varCandidateFlag+"' "
+            sqlAvailable += "ORDER BY ISNULL(LeadTime * 0, 1), LeadTime, "
+            sqlAvailable += "ISNULL(Sequence_No * 0, 1), "
+            sqlAvailable += "Sequence_No, MakeTriggerTime ASC"
+        }
+
+        rsa = stmta.executeQuery(sqlAvailable)
+
+        if(rsa.next())
+        {
+            varResult = vector()
+            varResult.add(rsa.getString(1))
+            varResult.add(rsa.getString(2))
+            varResult.add(varCandidateFlag)
+            varResult.add(varCandidatePriority)
+
+            println("TE Priority Selected: "+varCandidatePriority)
+            println("TE SpareFlag Selected: "+varCandidateFlag)
+            println("TE Order Selected: "+rsa.getString(1))
+
+            return varResult
+        }
+    }
+
+    println("No eligible TE order found for any active priority")
+    return vector()
+}
